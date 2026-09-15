@@ -49,3 +49,5 @@ alembic/versions/*.pyc
 # Secrets
 *.pem
 *.key
+prd.md
+tasks.md
