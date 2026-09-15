@@ -3,14 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from solders.pubkey import Pubkey
-
 from app.config import get_logger
 
 logger = get_logger(category="application")
 
-SPL_TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-WSOL_MINT = So11111111111111111111111111111111111111112
+SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 @dataclass
