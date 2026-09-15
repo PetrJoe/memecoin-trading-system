@@ -15,7 +15,7 @@ class ReconciliationResult:
     missing_in_db: list[str] = field(default_factory=list)
     missing_onchain: list[str] = field(default_factory=list)
     balance_mismatch: list[dict] = field(default_factory=list)
-    is_consistent: bool = True
+    is_consistent: bool = field(default=True, init=False)
 
     @property
     def has_discrepancies(self) -> bool:

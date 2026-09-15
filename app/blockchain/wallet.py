@@ -40,7 +40,7 @@ class WalletService:
         return str(self._keypair.pubkey())
 
     def sign(self, message: bytes) -> bytes:
-        return self._keypair.sign(message)
+        return self._keypair.sign_message(message)
 
     def sign_transaction(self, transaction) -> bytes:
         return bytes(self._keypair.sign_message(transaction))
