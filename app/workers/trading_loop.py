@@ -17,10 +17,11 @@ from app.risk.models import PortfolioRiskData, TokenRiskData
 from app.risk.position_sizing import PositionSizer
 from app.risk.risk_engine import RiskEngine
 from app.scanner.dex_screener import DexScreenerClient, DexScreenerClientError
-from app.scanner.filters import TokenFilter
+from app.scanner.filters import NewLaunchFilter, TokenFilter
 from app.scanner.models import MarketSnapshot
 from app.strategy.base import StrategyContext, StrategySignal
 from app.strategy.momentum import MomentumStrategy
+from app.strategy.new_launch import NewLaunchSniper
 
 logger = get_logger(category="trades")
 
@@ -65,9 +66,13 @@ class TradingLoop:
         self.dex_client = dex_client or DexScreenerClient()
         self.token_filter = TokenFilter.from_settings()
         self.strategy = MomentumStrategy()
-        self.dex_client = dex_client or DexScreenerClient()
-        self.token_filter = TokenFilter.from_settings()
-        self.strategy = MomentumStrategy()
+
+        # New-launch sniper (separate scanner + strategy)
+        self.new_launch_enabled = self.settings.NEW_LAUNCH_ENABLED
+        self.new_launch_filter = NewLaunchFilter.from_settings() if self.new_launch_enabled else None
+        self.new_launch_strategy = NewLaunchSniper() if self.new_launch_enabled else None
+        self._new_launch_seen: set[str] = set()  # dedup new-launch tokens
+        self._last_new_launch_scan_at: float = 0.0
 
         self._jupiter_client = None  # kept for cleanup in live mode
         self._wallet_service = None
@@ -231,6 +236,7 @@ class TradingLoop:
     async def _run(self) -> None:
         scanner_interval = max(5.0, float(self.settings.SCANNER_INTERVAL_SECONDS))
         position_interval = max(1.0, float(self.settings.POSITION_CHECK_INTERVAL_SECONDS))
+        new_launch_interval = max(5.0, float(self.settings.NEW_LAUNCH_SCAN_INTERVAL_SECONDS))
 
         try:
             while self._running:
@@ -242,7 +248,18 @@ class TradingLoop:
                 except Exception as e:
                     self._record_loop_error("position", e)
 
-                # Scanner runs on its own (slower) cadence
+                # New-launch scanner runs on FASTER cadence (priority)
+                if (
+                    self.new_launch_enabled
+                    and time.monotonic() - self._last_new_launch_scan_at >= new_launch_interval
+                ):
+                    self._last_new_launch_scan_at = time.monotonic()
+                    try:
+                        await self._new_launch_cycle()
+                    except Exception as e:
+                        self._record_loop_error("new_launch_scan", e)
+
+                # Standard scanner runs on its own (slower) cadence
                 if time.monotonic() - self._last_scan_at >= scanner_interval:
                     self._last_scan_at = time.monotonic()
                     try:
@@ -341,6 +358,198 @@ class TradingLoop:
                 }
 
         await self._analyze_watchlist(now)
+
+    # ------------------------------------------------------ new-launch cycle
+    async def _new_launch_cycle(self) -> None:
+        """
+        Fast scanner for newly launched Solana tokens.
+        Uses the token-profiles/latest endpoint and the NewLaunchSniper strategy.
+        Runs on a faster cadence than the standard scanner to catch tokens early.
+        """
+        try:
+            snapshots = await self.dex_client.get_new_solana_pairs(
+                max_age_seconds=int(self.settings.NEW_LAUNCH_MAX_AGE_MINUTES * 60),
+                min_liquidity_usd=self.settings.NEW_LAUNCH_MIN_LIQUIDITY_USD,
+            )
+        except DexScreenerClientError as e:
+            self._emit(
+                "new_launch_scanner_error",
+                level="warning",
+                message=f"New-launch scanner error: {e}",
+            )
+            return
+
+        if not snapshots:
+            return
+
+        now = time.time()
+        new_tokens_found = 0
+
+        for snap in snapshots:
+            # Skip if already seen or already in watchlist
+            if snap.token_address in self._new_launch_seen:
+                continue
+            if snap.token_address in self.state.watchlist:
+                continue
+
+            self._new_launch_seen.add(snap.token_address)
+
+            # Update price feed
+            self.state.prices[snap.token_address] = snap.price
+            self.state.latest_snapshots[snap.token_address] = snap
+            if self.simulator is not None:
+                self.simulator.update_market(
+                    snap.token_address, price=snap.price, liquidity_usd=snap.liquidity or 0.0
+                )
+
+            # Run new-launch filter
+            assert self.new_launch_filter is not None
+            filter_result = self.new_launch_filter.check(snap)
+            if not filter_result.passed:
+                logger.debug(
+                    "new_launch_filtered",
+                    token=snap.symbol,
+                    reasons=filter_result.reasons,
+                )
+                continue
+
+            new_tokens_found += 1
+
+            # Add to watchlist
+            self.state.watchlist[snap.token_address] = now
+
+            self._emit(
+                "new_launch_discovered",
+                token=snap.symbol,
+                message=f"🆕 New launch: {snap.symbol}",
+                price=snap.price,
+                liquidity=snap.liquidity,
+                volume_5m=snap.volume_5m,
+                pair_created=str(snap.pair_created_at) if snap.pair_created_at else None,
+            )
+            logger.info(
+                "new_launch_discovered",
+                token=snap.symbol,
+                address=snap.token_address[:12],
+                price=snap.price,
+                liquidity=snap.liquidity,
+            )
+
+            # Immediately attempt buy with the sniper strategy
+            await self._attempt_new_launch_buy(snap, now)
+
+        if new_tokens_found > 0:
+            self._emit(
+                "new_launch_scan_complete",
+                level="info",
+                message=f"New-launch scan: {new_tokens_found} fresh token(s) found",
+                tokens_found=new_tokens_found,
+            )
+
+    async def _attempt_new_launch_buy(
+        self,
+        snap: MarketSnapshot,
+        now: float,
+    ) -> None:
+        """Run the new-launch sniper strategy and attempt a buy."""
+        assert self.new_launch_strategy is not None
+
+        # Calculate age
+        token_age_hours = None
+        if snap.pair_created_at:
+            created = snap.pair_created_at.replace(tzinfo=None)
+            token_age_hours = (now - created.timestamp()) / 3600.0
+
+        context = StrategyContext(
+            snapshot=snap,
+            risk_score=self._heuristic_risk_score(snap),
+            token_age_hours=token_age_hours,
+        )
+
+        try:
+            signal = await self.new_launch_strategy.analyze(context)
+        except Exception as e:
+            self._record_loop_error("new_launch_strategy", e)
+            return
+
+        # Record signal for dashboard
+        self.state.open_signals[snap.token_address] = {
+            "symbol": snap.symbol,
+            "signal": signal.signal.value,
+            "score": signal.score,
+            "confidence": signal.confidence,
+            "reasons": signal.reasons[:5],
+            "strategy": "new_launch_sniper",
+            "at": now,
+        }
+
+        if signal.is_buy:
+            await self._attempt_new_launch_buy_order(snap, signal, token_age_hours, now)
+
+    async def _attempt_new_launch_buy_order(
+        self,
+        snap: MarketSnapshot,
+        signal: StrategySignal,
+        token_age_hours: Optional[float],
+        now: float,
+    ) -> None:
+        """Execute a buy for a new-launch token with sniper-specific sizing."""
+        token_risk = TokenRiskData(
+            token_address=snap.token_address,
+            symbol=snap.symbol,
+            liquidity=snap.liquidity,
+            volume_5m=snap.volume_5m,
+            buys_5m=snap.buys_5m,
+            sells_5m=snap.sells_5m,
+            price=snap.price,
+            token_age_hours=token_age_hours,
+        )
+
+        result = await self.orchestrator.process_buy_signal(
+            token_address=snap.token_address,
+            symbol=snap.symbol,
+            snapshot=snap,
+            token_risk=token_risk,
+            portfolio_risk=self._portfolio_risk(),
+            strategy_context=self._build_context(snap, now - (token_age_hours or 0) * 3600, now),
+        )
+
+        status = result.get("status")
+        if status == "executed":
+            self.balance_tracker.record_buy(
+                amount_usd=result["size_usd"],
+                fee_usd=result.get("fee_usd", 0.0),
+            )
+            self._emit(
+                "new_launch_buy_executed",
+                token=snap.symbol,
+                message=f"🎯 New launch buy: {snap.symbol}",
+                size_usd=result["size_usd"],
+                entry_price=result["entry_price"],
+                slippage_pct=result.get("slippage_pct"),
+            )
+            logger.info(
+                "new_launch_buy_executed",
+                token=snap.symbol,
+                size_usd=result["size_usd"],
+                entry_price=result["entry_price"],
+            )
+        elif status == "rejected":
+            self.state.watchlist.pop(snap.token_address, None)
+            self._emit(
+                "new_launch_buy_rejected",
+                token=snap.symbol,
+                level="warning",
+                message=f"New launch {snap.symbol} rejected: {result.get('reason')}",
+                reason=result.get("reason"),
+            )
+        elif status == "failed":
+            self._emit(
+                "new_launch_buy_failed",
+                token=snap.symbol,
+                level="error",
+                message=f"New launch buy failed: {snap.symbol}: {result.get('detail')}",
+            )
 
     async def _analyze_watchlist(self, now: float) -> None:
         """Run strategy on watched tokens; attempt buys on BUY signals."""

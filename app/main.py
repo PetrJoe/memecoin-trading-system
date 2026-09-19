@@ -42,6 +42,8 @@ def print_startup_banner() -> None:
     print(f"  Trading:     {'ENABLED' if settings.TRADING_ENABLED else 'signals only (TRADING_ENABLED=false)'}")
     print(f"  Environment: {settings.APP_ENV.value}")
     print(f"  Paper bal:   ${settings.PAPER_STARTING_BALANCE_USD:,.2f}")
+    if settings.NEW_LAUNCH_ENABLED:
+        print(f"  Sniper:      🎯 NEW-LAUNCH enabled (max age: {settings.NEW_LAUNCH_MAX_AGE_MINUTES:.0f}min)")
     if not settings.is_paper:
         print(f"  RPC:         {settings.SOLANA_RPC_URL}")
         key = settings.BOT_PRIVATE_KEY.get_secret_value()

@@ -96,3 +96,90 @@ class TokenFilter:
             reasons.append(f"Price ${snapshot.price} > ${self.max_price}")
 
         return FilterResult(passed=len(reasons) == 0, reasons=reasons)
+
+
+class NewLaunchFilter:
+    """
+    Specialized filter for newly launched tokens.
+    Uses relaxed thresholds to catch tokens early, while still filtering
+    out obvious scams and dead launches.
+    """
+
+    def __init__(
+        self,
+        max_token_age_minutes: float = 60.0,
+        min_liquidity_usd: float = 500.0,
+        min_buys_5m: int = 1,
+        min_buy_sell_ratio: float = 0.4,
+        min_volume_5m_usd: float = 100.0,
+        max_price: float = 0.01,  # reject obviously inflated tokens
+    ) -> None:
+        self.max_token_age_minutes = max_token_age_minutes
+        self.min_liquidity_usd = min_liquidity_usd
+        self.min_buys_5m = min_buys_5m
+        self.min_buy_sell_ratio = min_buy_sell_ratio
+        self.min_volume_5m_usd = min_volume_5m_usd
+        self.max_price = max_price
+
+    @classmethod
+    def from_settings(cls) -> NewLaunchFilter:
+        settings = get_settings()
+        return cls(
+            max_token_age_minutes=settings.NEW_LAUNCH_MAX_AGE_MINUTES,
+            min_liquidity_usd=settings.NEW_LAUNCH_MIN_LIQUIDITY_USD,
+            min_buys_5m=settings.NEW_LAUNCH_MIN_BUYS_5M,
+            min_buy_sell_ratio=settings.NEW_LAUNCH_MIN_BUY_SELL_RATIO,
+            min_volume_5m_usd=settings.NEW_LAUNCH_MIN_VOLUME_5M_USD,
+            max_price=settings.NEW_LAUNCH_MAX_PRICE,
+        )
+
+    def check(self, snapshot: MarketSnapshot) -> FilterResult:
+        reasons: list[str] = []
+
+        # Token age check (critical for new launches)
+        if snapshot.pair_created_at:
+            now = datetime.now(timezone.utc)
+            created = snapshot.pair_created_at.replace(tzinfo=timezone.utc) if snapshot.pair_created_at.tzinfo is None else snapshot.pair_created_at
+            age_minutes = (now - created).total_seconds() / 60.0
+            if age_minutes > self.max_token_age_minutes:
+                reasons.append(
+                    f"Token too old for new-launch: {age_minutes:.0f}min > {self.max_token_age_minutes:.0f}min"
+                )
+        else:
+            reasons.append("Unknown token age — cannot confirm new launch")
+
+        # Liquidity (lower threshold than standard filter)
+        if snapshot.liquidity is None or snapshot.liquidity < self.min_liquidity_usd:
+            reasons.append(
+                f"Liquidity ${snapshot.liquidity or 0:,.0f} < ${self.min_liquidity_usd:,.0f}"
+            )
+
+        # Must have some buy activity
+        if snapshot.buys_5m < self.min_buys_5m:
+            reasons.append(
+                f"Insufficient buys 5m: {snapshot.buys_5m} < {self.min_buys_5m}"
+            )
+
+        # Buy/sell ratio (avoid pure dump tokens)
+        total = snapshot.buys_5m + snapshot.sells_5m
+        if total > 0:
+            ratio = snapshot.buys_5m / total
+            if ratio < self.min_buy_sell_ratio:
+                reasons.append(
+                    f"Buy/sell ratio {ratio:.2f} < {self.min_buy_sell_ratio:.2f}"
+                )
+
+        # Minimum volume (very low for new tokens)
+        vol = snapshot.volume_5m or 0.0
+        if vol < self.min_volume_5m_usd:
+            reasons.append(
+                f"Volume 5m ${vol:,.0f} < ${self.min_volume_5m_usd:,.0f}"
+            )
+
+        # Max price filter (skip tokens that have already mooned)
+        if self.max_price > 0 and snapshot.price > self.max_price:
+            reasons.append(
+                f"Price ${snapshot.price:.6f} > max ${self.max_price:.6f} — likely already pumped"
+            )
+
+        return FilterResult(passed=len(reasons) == 0, reasons=reasons)

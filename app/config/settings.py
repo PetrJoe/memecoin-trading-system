@@ -85,6 +85,19 @@ class Settings(BaseSettings):
     MIN_RISK_SCORE: int = 70
     MAX_CANDIDATES_PER_SCAN: int = 3
 
+    # New-Launch Sniper
+    NEW_LAUNCH_ENABLED: bool = True
+    NEW_LAUNCH_SCAN_INTERVAL_SECONDS: int = 10  # faster than standard scan
+    NEW_LAUNCH_MAX_AGE_MINUTES: float = 60.0    # only tokens < 1 hour old
+    NEW_LAUNCH_MIN_LIQUIDITY_USD: float = 500.0  # much lower than standard
+    NEW_LAUNCH_MIN_BUYS_5M: int = 1
+    NEW_LAUNCH_MIN_BUY_SELL_RATIO: float = 0.4
+    NEW_LAUNCH_MIN_VOLUME_5M_USD: float = 100.0
+    NEW_LAUNCH_MAX_PRICE: float = 0.01           # skip tokens that already mooned
+    NEW_LAUNCH_MAX_POSITION_USD: float = 0.25    # smaller positions for risky new tokens
+    NEW_LAUNCH_STOP_LOSS_PERCENT: float = 15.0   # wider stop for volatility
+    NEW_LAUNCH_TAKE_PROFIT_PERCENT: float = 50.0 # higher target for early entry
+
     # Backtesting
     BACKTEST_FEE_PERCENT: float = 0.25
     BACKTEST_SLIPPAGE_PCT: float = 0.10

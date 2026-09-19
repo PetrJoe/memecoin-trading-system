@@ -163,3 +163,83 @@ class DexScreenerClient:
         except Exception as e:
             logger.warning("dex_screener_trending_failed", error=str(e))
             return []
+
+    async def get_new_solana_pairs(
+        self,
+        max_age_seconds: int = 3600,
+        min_liquidity_usd: float = 0.0,
+        limit: int = 50,
+    ) -> list[MarketSnapshot]:
+        """
+        Fetch recently created Solana pairs from DexScreener.
+        Uses the token-profiles/latest endpoint to discover brand-new tokens,
+        then enriches them with pair data.
+        """
+        try:
+            # Step 1: Get latest token profiles (newly launched tokens)
+            response = await self._request("GET", "/token-profiles/latest/v1")
+            data = response.json()
+            if not isinstance(data, list):
+                return []
+
+            # Filter to Solana tokens only
+            solana_tokens = [
+                item.get("tokenAddress", "")
+                for item in data
+                if item.get("chainId") == "solana" and item.get("tokenAddress")
+            ]
+
+            if not solana_tokens:
+                return []
+
+            # Step 2: Fetch pair data for these new tokens (batched)
+            all_pairs: list[DexScreenerPair] = []
+            batch_size = 30
+            for i in range(0, len(solana_tokens), batch_size):
+                batch = solana_tokens[i : i + batch_size]
+                addr_str = ",".join(batch)
+                try:
+                    resp = await self._request("GET", f"/tokens/v1/solana/{addr_str}")
+                    items = resp.json()
+                    if isinstance(items, list):
+                        for item in items:
+                            try:
+                                pair = DexScreenerPair.model_validate(item)
+                                all_pairs.append(pair)
+                            except Exception:
+                                continue
+                except DexScreenerClientError:
+                    continue
+
+            # Step 3: Filter by age and liquidity, convert to MarketSnapshot
+            now_ms = int(__import__("time").time() * 1000)
+            cutoff_ms = now_ms - (max_age_seconds * 1000)
+            snapshots: list[MarketSnapshot] = []
+
+            for pair in all_pairs:
+                # Check age
+                if pair.pair_created_at and pair.pair_created_at < cutoff_ms:
+                    continue
+
+                # Check minimum liquidity
+                liq = pair.liquidity.usd if pair.liquidity and pair.liquidity.usd else 0.0
+                if liq < min_liquidity_usd:
+                    continue
+
+                snapshot = MarketSnapshot.from_pair(pair)
+                snapshots.append(snapshot)
+
+                if len(snapshots) >= limit:
+                    break
+
+            logger.info(
+                "new_solana_pairs_fetched",
+                total_pairs=len(all_pairs),
+                filtered=len(snapshots),
+                max_age_s=max_age_seconds,
+            )
+            return snapshots
+
+        except Exception as e:
+            logger.warning("dex_screener_new_pairs_failed", error=str(e))
+            return []

@@ -1,6 +1,6 @@
 from app.scanner.dex_screener import DexScreenerClient, DexScreenerClientError
 from app.scanner.discovery import TokenDiscovery
-from app.scanner.filters import FilterResult, TokenFilter
+from app.scanner.filters import FilterResult, NewLaunchFilter, TokenFilter
 from app.scanner.market_data import MarketDataService
 from app.scanner.models import (
     DexScreenerPair,
@@ -20,6 +20,7 @@ __all__ = [
     "LiquidityInfo",
     "MarketDataService",
     "MarketSnapshot",
+    "NewLaunchFilter",
     "PriceChangeInfo",
     "TokenDiscovery",
     "TokenFilter",
