@@ -16,6 +16,7 @@ from app.risk.exposure import ExposureTracker
 from app.risk.models import PortfolioRiskData, TokenRiskData
 from app.risk.position_sizing import PositionSizer
 from app.risk.risk_engine import RiskEngine
+from app.risk.rug_detector import RugDetector, get_rug_detector
 from app.scanner.dex_screener import DexScreenerClient, DexScreenerClientError
 from app.scanner.filters import NewLaunchFilter, TokenFilter
 from app.scanner.models import MarketSnapshot
@@ -73,6 +74,9 @@ class TradingLoop:
         self.new_launch_strategy = NewLaunchSniper() if self.new_launch_enabled else None
         self._new_launch_seen: set[str] = set()  # dedup new-launch tokens
         self._last_new_launch_scan_at: float = 0.0
+
+        # Rug-pull detector
+        self.rug_detector = get_rug_detector() if self.settings.RUG_CHECK_ENABLED else None
 
         self._jupiter_client = None  # kept for cleanup in live mode
         self._wallet_service = None
@@ -494,6 +498,56 @@ class TradingLoop:
         now: float,
     ) -> None:
         """Execute a buy for a new-launch token with sniper-specific sizing."""
+        # ── RUG CHECK: run before any buy execution ─────────────────────
+        if self.rug_detector:
+            rug_result = await self.rug_detector.analyze(
+                token_address=snap.token_address,
+                symbol=snap.symbol,
+                name=snap.name,
+                price=snap.price,
+                liquidity=snap.liquidity,
+                market_cap=snap.market_cap,
+                fdv=snap.fdv,
+                buys_5m=snap.buys_5m,
+                sells_5m=snap.sells_5m,
+                buys_1h=snap.buys_1h,
+                sells_1h=snap.sells_1h,
+                volume_5m=snap.volume_5m,
+                volume_1h=snap.volume_1h,
+                price_change_m5=snap.price_change_m5,
+                price_change_h1=snap.price_change_h1,
+                token_age_hours=token_age_hours,
+                pair_created_at=snap.pair_created_at,
+                dex=snap.dex,
+            )
+            if not rug_result.approved:
+                self.state.watchlist.pop(snap.token_address, None)
+                self._emit(
+                    "rug_check_veto",
+                    token=snap.symbol,
+                    level="warning",
+                    message=f"🛡️ Rug check VETO: {snap.symbol} — {', '.join(rug_result.veto_reasons[:2])}",
+                    rug_score=rug_result.rug_score,
+                    veto_reasons=rug_result.veto_reasons,
+                    flags=[f"{f.check_type.value}: {f.message}" for f in rug_result.flags[:5]],
+                )
+                logger.warning(
+                    "rug_check_veto",
+                    token=snap.symbol,
+                    score=rug_result.rug_score,
+                    vetos=rug_result.veto_reasons,
+                )
+                return
+            elif rug_result.warnings:
+                self._emit(
+                    "rug_check_warnings",
+                    token=snap.symbol,
+                    level="info",
+                    message=f"🛡️ Rug check WARN: {snap.symbol} — {len(rug_result.warnings)} concern(s)",
+                    rug_score=rug_result.rug_score,
+                    warnings=rug_result.warnings,
+                )
+
         token_risk = TokenRiskData(
             token_address=snap.token_address,
             symbol=snap.symbol,
@@ -620,6 +674,48 @@ class TradingLoop:
         discovered_at: float,
         now: float,
     ) -> None:
+        # ── RUG CHECK: run before any buy execution ─────────────────────
+        if self.rug_detector:
+            token_age_hours = (now - discovered_at) / 3600.0 if now > discovered_at else None
+            rug_result = await self.rug_detector.analyze(
+                token_address=snap.token_address,
+                symbol=snap.symbol,
+                name=snap.name,
+                price=snap.price,
+                liquidity=snap.liquidity,
+                market_cap=snap.market_cap,
+                fdv=snap.fdv,
+                buys_5m=snap.buys_5m,
+                sells_5m=snap.sells_5m,
+                buys_1h=snap.buys_1h,
+                sells_1h=snap.sells_1h,
+                volume_5m=snap.volume_5m,
+                volume_1h=snap.volume_1h,
+                price_change_m5=snap.price_change_m5,
+                price_change_h1=snap.price_change_h1,
+                token_age_hours=token_age_hours,
+                pair_created_at=snap.pair_created_at,
+                dex=snap.dex,
+            )
+            if not rug_result.approved:
+                self.state.watchlist.pop(addr, None)
+                self._emit(
+                    "rug_check_veto",
+                    token=snap.symbol,
+                    level="warning",
+                    message=f"🛡️ Rug check VETO: {snap.symbol} — {', '.join(rug_result.veto_reasons[:2])}",
+                    rug_score=rug_result.rug_score,
+                    veto_reasons=rug_result.veto_reasons,
+                    flags=[f"{f.check_type.value}: {f.message}" for f in rug_result.flags[:5]],
+                )
+                logger.warning(
+                    "rug_check_veto",
+                    token=snap.symbol,
+                    score=rug_result.rug_score,
+                    vetos=rug_result.veto_reasons,
+                )
+                return
+
         token_risk = TokenRiskData(
             token_address=addr,
             symbol=snap.symbol,

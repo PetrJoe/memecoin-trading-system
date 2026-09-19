@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     NEW_LAUNCH_STOP_LOSS_PERCENT: float = 15.0   # wider stop for volatility
     NEW_LAUNCH_TAKE_PROFIT_PERCENT: float = 50.0 # higher target for early entry
 
+    # Rug-Pull Detection
+    RUG_CHECK_ENABLED: bool = True
+    RUG_MIN_SCORE: int = 50                       # minimum rug-safety score to allow buy
+
     # Backtesting
     BACKTEST_FEE_PERCENT: float = 0.25
     BACKTEST_SLIPPAGE_PCT: float = 0.10
