@@ -1,0 +1,43 @@
+[Unit]
+Description=Meme Trader - Autonomous Solana Memecoin Trading Bot
+Documentation=file:///opt/meme-trader/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=memetrader
+Group=memetrader
+WorkingDirectory=/opt/meme-trader
+
+# Environment: secrets live in a root-only readable env file
+EnvironmentFile=/opt/meme-trader/.env
+
+# Never dump core with secrets in memory
+LimitCORE=0
+
+# Start/stop behaviour
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+KillSignal=SIGINT
+KillMode=mixed
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/meme-trader
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# Logging to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meme-trader
+
+[Install]
+WantedBy=multi-user.target

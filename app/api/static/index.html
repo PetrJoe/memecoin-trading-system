@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Meme Trader — Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Login overlay -->
+  <div id="login-overlay" class="login-overlay">
+    <form id="login-form" class="login-card" autocomplete="off">
+      <h1>🕯️ Meme Trader</h1>
+      <p class="login-sub">Sign in to the control panel</p>
+      <label>Username
+        <input type="text" id="login-username" required autocomplete="username">
+      </label>
+      <label>Password
+        <input type="password" id="login-password" required autocomplete="current-password">
+      </label>
+      <button type="submit" id="login-btn" class="btn btn-primary">Sign in</button>
+      <div id="login-error" class="login-error" hidden></div>
+    </form>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="dashboard" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">🕯️</span>
+        <h1>Meme Trader</h1>
+        <span id="mode-badge" class="badge badge-paper">PAPER</span>
+        <span id="cb-badge" class="badge badge-normal">NORMAL</span>
+      </div>
+      <div class="topbar-right">
+        <span id="uptime" class="muted"></span>
+        <button id="logout-btn" class="btn btn-ghost">Log out</button>
+      </div>
+    </header>
+
+    <div id="alert-banner" class="alert-banner" hidden></div>
+
+    <section class="cards">
+      <div class="card"><div class="card-label">Equity</div><div id="stat-equity" class="card-value">—</div><div id="stat-equity-pnl" class="card-sub muted"></div></div>
+      <div class="card"><div class="card-label">Cash</div><div id="stat-cash" class="card-value">—</div><div class="card-sub muted">available</div></div>
+      <div class="card"><div class="card-label">Open Positions</div><div id="stat-positions" class="card-value">—</div><div id="stat-exposure" class="card-sub muted"></div></div>
+      <div class="card"><div class="card-label">Total P&amp;L</div><div id="stat-pnl" class="card-value">—</div><div id="stat-fees" class="card-sub muted"></div></div>
+      <div class="card"><div class="card-label">Win Rate</div><div id="stat-winrate" class="card-value">—</div><div id="stat-trades" class="card-sub muted"></div></div>
+      <div class="card"><div class="card-label">Circuit Breaker</div><div id="stat-cb" class="card-value">—</div><div class="card-sub muted">risk state</div></div>
+    </section>
+
+    <section class="panels">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Open Positions</h2>
+          <div class="actions">
+            <button id="pause-btn" class="btn btn-warn">⏸ Pause</button>
+            <button id="resume-btn" class="btn btn-ok">▶ Resume</button>
+            <button id="emergency-btn" class="btn btn-danger" data-needs-confirm="1">🛑 Emergency close all</button>
+          </div>
+        </div>
+        <table class="tbl">
+          <thead><tr><th>Token</th><th>Entry</th><th>Last</th><th>Qty</th><th>Value</th><th>Unrl. P&L</th><th>SL / TP</th><th></th></tr></thead>
+          <tbody id="positions-body"><tr><td colspan="8" class="muted">No open positions</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Recent Trades</h2></div>
+        <table class="tbl">
+          <thead><tr><th>When</th><th>Token</th><th>P&L</th><th>%</th><th>Exit</th></tr></thead>
+          <tbody id="trades-body"><tr><td colspan="5" class="muted">No trades yet</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Events</h2><span id="events-note" class="muted"></span></div>
+        <ul id="events-list" class="events"></ul>
+      </div>
+    </section>
+
+    <footer class="footer muted">Polling every 5s · <span id="last-refresh"></span></footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

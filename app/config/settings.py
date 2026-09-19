@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
     TELEGRAM_CHAT_ID: str = ""
 
+    # Web UI (authenticated AJAX dashboard)
+    WEB_UI_ENABLED: bool = True
+    WEB_UI_USERNAME: str = "admin"
+    WEB_UI_PASSWORD: SecretStr = SecretStr("")  # empty => login disabled (secure default)
+    WEB_UI_SECRET_KEY: SecretStr = SecretStr("")
+    WEB_UI_SESSION_TTL_MINUTES: int = 60
+    WEB_UI_LOGIN_MAX_FAILURES: int = 5
+    WEB_UI_RATE_LIMIT_WINDOW_SECONDS: int = 300
+    WEB_UI_COOKIE_SECURE: bool = False  # set true behind HTTPS in production
+
     # Bot Wallet
     BOT_PRIVATE_KEY: SecretStr = SecretStr("")
 
@@ -67,12 +77,25 @@ class Settings(BaseSettings):
     TAKE_PROFIT_PERCENT: float = 25.0
     TRAILING_STOP_PERCENT: float = 15.0
 
+    # Paper Trading
+    PAPER_STARTING_BALANCE_USD: float = 100.0
+    PAPER_FEE_PERCENT: float = 0.25
+
     # Scanner
     SCANNER_INTERVAL_SECONDS: int = 20
     POSITION_CHECK_INTERVAL_SECONDS: int = 5
     MIN_LIQUIDITY_USD: float = 10000.0
     MIN_VOLUME_5M_USD: float = 5000.0
     MIN_RISK_SCORE: int = 70
+    MAX_CANDIDATES_PER_SCAN: int = 3
+
+    # Backtesting
+    BACKTEST_FEE_PERCENT: float = 0.25
+    BACKTEST_SLIPPAGE_PCT: float = 0.10
+
+    # Monitoring thresholds
+    DISK_USAGE_WARN_PCT: int = 80
+    MEM_USAGE_WARN_PCT: int = 85
 
     # Scoring Weights
     SCORE_WEIGHT_LIQUIDITY: int = 20

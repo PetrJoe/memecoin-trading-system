@@ -30,8 +30,10 @@ class TestSolanaClient:
 
     @pytest.mark.asyncio
     async def test_get_recent_blockhash(self, client):
+        mock_value = MagicMock()
+        mock_value.blockhash = "FakeBlockhash123"
         mock_response = MagicMock()
-        mock_response.blockhash = "FakeBlockhash123"
+        mock_response.value = mock_value
 
         with patch.object(client, "_get_client") as mock_get:
             mock_http = AsyncMock()

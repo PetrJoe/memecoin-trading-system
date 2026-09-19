@@ -17,6 +17,9 @@ class ReconciliationResult:
     balance_mismatch: list[dict] = field(default_factory=list)
     is_consistent: bool = field(default=True, init=False)
 
+    def __post_init__(self) -> None:
+        self.is_consistent = not self.has_discrepancies
+
     @property
     def has_discrepancies(self) -> bool:
         return bool(self.missing_in_db or self.missing_onchain or self.balance_mismatch)
