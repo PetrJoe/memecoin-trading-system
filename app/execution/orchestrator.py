@@ -45,7 +45,7 @@ class TradeOrchestrator:
         pnl_calculator: PnLCalculator,
         exposure_tracker: ExposureTracker,
         executor,  # PaperExecutor or live Buy/Sell executor pair
-        notifier=None,  # optional Telegram notifier
+        notifier=None,  # optional notifier (web EventLog, future channels)
     ) -> None:
         self.settings = get_settings()
         self.risk_engine = risk_engine
@@ -61,6 +61,11 @@ class TradeOrchestrator:
         self._token_locks: dict[str, asyncio.Lock] = {}
         self._recent_signals: dict[str, float] = {}
         self._in_flight: set[str] = set()
+
+        # Monotonic position id sequence (DB-backed ids come with live persistence)
+        import itertools
+
+        self._position_id_counter = itertools.count(1)
 
     # ------------------------------------------------------------ protection
     def _get_lock(self, token_address: str) -> asyncio.Lock:
@@ -175,7 +180,8 @@ class TradeOrchestrator:
         stop_loss = entry_price * (1 - self.settings.STOP_LOSS_PERCENT / 100.0)
         take_profit = entry_price * (1 + self.settings.TAKE_PROFIT_PERCENT / 100.0)
 
-        position_id = int(time.time() * 1000) % 1_000_000  # placeholder id until DB integration
+        # Monotonic unique id for the in-memory position registry
+        position_id = next(self._position_id_counter)
         self.position_manager.open_position(
             position_id=position_id,
             token_address=token_address,
@@ -364,7 +370,7 @@ class TradeOrchestrator:
 
     # --------------------------------------------------------------- helpers
     async def _notify_safe(self, event: str, **kwargs) -> None:
-        """Telegram failures must never break the trading pipeline."""
+        """Notifier failures must never break the trading pipeline."""
         try:
             await self.notifier.send_event(event, **kwargs)
         except Exception as e:

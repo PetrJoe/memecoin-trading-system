@@ -43,14 +43,15 @@ class _SimExecutor:
 
 class TradingLoop:
     """
-    Drives the full paper-trading pipeline on intervals:
+    Drives the full trading pipeline on intervals:
 
         scanner ──▶ filter ──▶ strategy ──▶ orchestrator.buy
             │                                      │
             └──▶ price feed ──▶ position monitor ──┘ (exits via orchestrator.sell)
 
-    All state is mirrored into AppState so the web dashboard renders the
-    live session. Database-free: snapshots stay in memory (paper mode only).
+    Supports paper and live modes:
+      - Paper: in-memory simulator, no chain interaction
+      - Live:  real Jupiter swaps via Solana mainnet, on-chain balance tracking
     """
 
     def __init__(
@@ -64,12 +65,42 @@ class TradingLoop:
         self.dex_client = dex_client or DexScreenerClient()
         self.token_filter = TokenFilter.from_settings()
         self.strategy = MomentumStrategy()
+        self.dex_client = dex_client or DexScreenerClient()
+        self.token_filter = TokenFilter.from_settings()
+        self.strategy = MomentumStrategy()
 
-        # --- wiring (components may be pre-registered in state by tests) ---
+        self._jupiter_client = None  # kept for cleanup in live mode
+        self._wallet_service = None
+        self._solana_client = None
+
+        # --- wiring: paper or live based on TRADING_MODE ---
+        if self.settings.is_paper:
+            self._wire_paper_mode()
+        else:
+            self._wire_live_mode()
+
+        # Register everything so the dashboard can render
+        self.state.orchestrator = self.orchestrator
+        self.state.position_manager = self.position_manager
+        self.state.pnl_calculator = self.pnl_calculator
+        self.state.circuit_breaker = self.circuit_breaker
+        self.state.mode = self.settings.TRADING_MODE.value
+        self.state.trading_enabled = True
+
+        self.search_query = search_query
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+        self._last_scan_at: float = 0.0
+        self._last_emit: dict[tuple[str, str], float] = {}  # (event_type, token) -> ts
+
+    # ---------------------------------------------------------- mode wiring
+    def _wire_paper_mode(self) -> None:
+        """Wire everything for paper (simulated) trading."""
         sim = self.state.paper_simulator or PaperFillSimulator(
             starting_cash_usd=self.settings.PAPER_STARTING_BALANCE_USD
         )
         self.simulator = sim
+        self.state.paper_simulator = sim
 
         if self.state.orchestrator is None:
             orchestrator = TradeOrchestrator(
@@ -84,6 +115,7 @@ class TradingLoop:
             self.orchestrator = orchestrator
         else:
             self.orchestrator = self.state.orchestrator
+
         self.circuit_breaker = self.orchestrator.circuit_breaker
         self.position_manager = self.orchestrator.position_manager
         self.pnl_calculator = self.orchestrator.pnl_calculator
@@ -94,20 +126,65 @@ class TradingLoop:
             )
         self.balance_tracker = self.state.balance_tracker
 
-        # Register everything so the dashboard can render
-        self.state.orchestrator = self.orchestrator
-        self.state.position_manager = self.position_manager
-        self.state.pnl_calculator = self.pnl_calculator
-        self.state.circuit_breaker = self.circuit_breaker
-        self.state.paper_simulator = self.simulator
-        self.state.mode = self.settings.TRADING_MODE.value
-        self.state.trading_enabled = True
+    def _wire_live_mode(self) -> None:
+        """Wire the full live execution stack: Jupiter + Solana + wallet."""
+        from app.blockchain.solana_client import SolanaClient
+        from app.blockchain.wallet import WalletService
+        from app.execution.live import LiveExecutor, get_live_executor
 
-        self.search_query = search_query
-        self._task: Optional[asyncio.Task] = None
-        self._running = False
-        self._last_scan_at: float = 0.0
-        self._last_emit: dict[tuple[str, str], float] = {}  # (event_type, token) -> ts
+        # 1. Initialize wallet
+        key_b58 = self.settings.BOT_PRIVATE_KEY.get_secret_value()
+        if not key_b58:
+            raise RuntimeError(
+                "BOT_PRIVATE_KEY is required for live trading. "
+                "Generate one with: python scripts/create_bot_wallet.py"
+            )
+
+        self._wallet_service = WalletService(private_key_b58=key_b58)
+        wallet_pubkey = self._wallet_service.address
+        logger.info("live_wallet_loaded", address=wallet_pubkey)
+
+        # 2. Initialize Solana RPC client
+        self._solana_client = SolanaClient()
+
+        # 3. Build the live executor
+        self._jupiter_client, tx_manager, live_executor = get_live_executor(
+            wallet_public_key=wallet_pubkey,
+            solana_rpc_url=self.settings.SOLANA_RPC_URL,
+        )
+        self.simulator = None  # no paper simulator in live mode
+
+        # 4. Wire orchestrator
+        if self.state.orchestrator is None:
+            orchestrator = TradeOrchestrator(
+                risk_engine=RiskEngine(),
+                position_sizer=PositionSizer(),
+                circuit_breaker=CircuitBreaker(),
+                position_manager=PositionManager(),
+                pnl_calculator=PnLCalculator(),
+                exposure_tracker=ExposureTracker(),
+                executor=live_executor,
+            )
+            self.orchestrator = orchestrator
+        else:
+            self.orchestrator = self.state.orchestrator
+
+        self.circuit_breaker = self.orchestrator.circuit_breaker
+        self.position_manager = self.orchestrator.position_manager
+        self.pnl_calculator = self.orchestrator.pnl_calculator
+
+        # 5. Initialize balance tracker with on-chain source
+        if self.state.balance_tracker is None:
+            self.state.balance_tracker = BalanceTracker()
+        self.balance_tracker = self.state.balance_tracker
+        self.balance_tracker.set_wallet(wallet_pubkey, self._solana_client)
+
+        logger.info(
+            "live_mode_initialized",
+            wallet=wallet_pubkey,
+            rpc=self.settings.SOLANA_RPC_URL,
+            mode=self.settings.TRADING_MODE.value,
+        )
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -115,11 +192,23 @@ class TradingLoop:
             return
         self._running = True
         self._task = asyncio.create_task(self._run())
-        self.state.event_log.emit(
-            "bot_started",
-            level="info",
-            message=f"Paper trading loop started (balance ${self.simulator.starting_cash_usd:,.2f})",
-        )
+
+        if self.settings.is_paper:
+            self.state.event_log.emit(
+                "bot_started",
+                level="info",
+                message=f"Paper trading loop started (balance ${self.settings.PAPER_STARTING_BALANCE_USD:,.2f})",
+            )
+        else:
+            # Fetch initial on-chain balance
+            if self._solana_client:
+                await self.balance_tracker.fetch_onchain_balance()
+            self.state.event_log.emit(
+                "bot_started",
+                level="info",
+                message=f"Live trading started ({self.settings.TRADING_MODE.value} mode)",
+            )
+
         logger.info("trading_loop_started")
 
     async def stop(self) -> None:
@@ -160,6 +249,18 @@ class TradingLoop:
                         await self._scan_cycle()
                     except Exception as e:
                         self._record_loop_error("scan", e)
+
+                # Live mode: refresh on-chain balance periodically
+                if not self.settings.is_paper and self._solana_client:
+                    try:
+                        await self.balance_tracker.fetch_onchain_balance()
+                        # Trigger circuit breaker if wallet is nearly empty
+                        if self.balance_tracker.sol_balance < 0.01:
+                            self.circuit_breaker.record_wallet_balance_low(
+                                self.balance_tracker.sol_balance
+                            )
+                    except Exception as e:
+                        self._record_loop_error("balance", e)
 
                 elapsed = time.monotonic() - cycle_start
                 await asyncio.sleep(max(0.5, position_interval - elapsed))
@@ -207,7 +308,8 @@ class TradingLoop:
         for snap in snapshots:
             self.state.prices[snap.token_address] = snap.price
             self.state.latest_snapshots[snap.token_address] = snap
-            self.simulator.update_market(snap.token_address, price=snap.price, liquidity_usd=snap.liquidity or 0.0)
+            if self.simulator is not None:
+                self.simulator.update_market(snap.token_address, price=snap.price, liquidity_usd=snap.liquidity or 0.0)
 
         # Discovery: new tokens passing filters join the watchlist
         for snap in snapshots:
@@ -419,14 +521,31 @@ class TradingLoop:
     # ---------------------------------------------------------------- helpers
     def _portfolio_risk(self) -> PortfolioRiskData:
         daily = self.pnl_calculator.daily_summary()
+
+        # Live mode: use on-chain SOL balance as wallet balance
+        if not self.settings.is_paper and self._solana_client:
+            wallet_balance_usd = self.balance_tracker.sol_balance_usd
+        else:
+            wallet_balance_usd = max(0.0, self.simulator.cash_usd) if self.simulator else 0.0
+
         return PortfolioRiskData(
-            wallet_balance_usd=max(0.0, self.simulator.cash_usd),
-            total_exposure_usd=self.simulator.portfolio_value() - self.simulator.cash_usd,
+            wallet_balance_usd=wallet_balance_usd,
+            total_exposure_usd=(
+                (self.balance_tracker.position_value_usd if self.balance_tracker else 0.0)
+                - (self.balance_tracker.cash_usd if self.balance_tracker else 0.0)
+            ),
             open_positions=self.position_manager.open_count(),
             daily_pnl=daily.net_pnl,
             consecutive_losses=self.pnl_calculator.consecutive_losses(),
             daily_loss_usd=max(0.0, -daily.net_pnl),
         )
+
+    async def close(self) -> None:
+        """Clean up external resources (Jupiter, Solana clients)."""
+        if self._jupiter_client:
+            await self._jupiter_client.close()
+        if self._solana_client:
+            await self._solana_client.close()
 
 
 def build_default_loop(search_query: str = "") -> TradingLoop:

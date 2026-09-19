@@ -1,5 +1,6 @@
 from app.execution.buy import BuyExecutor
 from app.execution.jupiter import JupiterClient
+from app.execution.live import LiveExecutor, get_live_executor
 from app.execution.orchestrator import TradeOrchestrator
 from app.execution.paper import (
     PaperExecutor,
@@ -18,6 +19,8 @@ __all__ = [
     "QuoteResponse",
     "BuyExecutor",
     "SellExecutor",
+    "LiveExecutor",
+    "get_live_executor",
     "PaperExecutor",
     "PaperFill",
     "PaperFillSimulator",

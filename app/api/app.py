@@ -33,7 +33,9 @@ def create_api_app() -> FastAPI:
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    # Failed-login counter feeding the rate limiter (4xx on /api/login)
+    # Failed-login counter feeding the rate limiter.
+    # (Failures are recorded here on 401; the login route itself returns
+    # 200-with-ok:false for bad credentials, and the route records those.)
     @app.middleware("http")
     async def login_rate_limit(request: Request, call_next):
         if request.url.path == "/api/login" and request.method == "POST":
@@ -45,8 +47,6 @@ def create_api_app() -> FastAPI:
                     content={"ok": False, "message": "Too many attempts", "retry_after": limiter.seconds_until_retry(ip)},
                 )
         response = await call_next(request)
-        if request.url.path == "/api/login" and response.status_code == 401:
-            limiter.record_failure(ip)
         return response
 
     app.include_router(router)

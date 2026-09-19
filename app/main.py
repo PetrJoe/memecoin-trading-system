@@ -42,6 +42,18 @@ def print_startup_banner() -> None:
     print(f"  Trading:     {'ENABLED' if settings.TRADING_ENABLED else 'signals only (TRADING_ENABLED=false)'}")
     print(f"  Environment: {settings.APP_ENV.value}")
     print(f"  Paper bal:   ${settings.PAPER_STARTING_BALANCE_USD:,.2f}")
+    if not settings.is_paper:
+        print(f"  RPC:         {settings.SOLANA_RPC_URL}")
+        key = settings.BOT_PRIVATE_KEY.get_secret_value()
+        if key:
+            from app.blockchain.wallet import WalletService
+            try:
+                ws = WalletService(private_key_b58=key)
+                print(f"  Wallet:      {ws.address}")
+            except Exception:
+                print("  Wallet:      ⚠️  Invalid BOT_PRIVATE_KEY")
+        else:
+            print("  Wallet:      ⚠️  BOT_PRIVATE_KEY not set")
     print(f"  Web UI:      {'enabled' if settings.WEB_UI_ENABLED else 'disabled'}")
     if settings.WEB_UI_ENABLED:
         if not settings.WEB_UI_PASSWORD.get_secret_value():
@@ -85,6 +97,7 @@ class AppRuntime:
         self.health_worker: HealthWorker | None = None
         self.recon_worker: ReconciliationWorker | None = None
         self.api_server = None
+        self._api_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
 
     async def start(self) -> None:
@@ -111,7 +124,7 @@ class AppRuntime:
                 log_level="warning",
             )
             self.api_server = uvicorn.Server(config)
-            asyncio.create_task(self.api_server.serve())
+            self._api_task = asyncio.create_task(self.api_server.serve())
             logger.info("api_server_started", port=config.port)
 
     async def run_forever(self) -> None:
@@ -138,13 +151,21 @@ class AppRuntime:
         if self.health_worker:
             await self.health_worker.stop()
 
-        # 4. Stop API server
-        if self.api_server:
+        # 4. Stop API server (await clean teardown, bounded)
+        if self.api_server and self._api_task:
             self.api_server.should_exit = True
+            try:
+                await asyncio.wait_for(self._api_task, timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.warning("api_server_shutdown_timeout")
 
         # 5. Close scanner client
         if self.trading_loop and self.trading_loop.dex_client:
             await self.trading_loop.dex_client.close()
+
+        # 6. Close live execution clients (Jupiter, Solana RPC)
+        if self.trading_loop:
+            await self.trading_loop.close()
 
         logger.info("graceful_shutdown_complete")
 

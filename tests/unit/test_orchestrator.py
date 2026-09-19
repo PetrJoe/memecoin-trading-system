@@ -279,7 +279,7 @@ class TestNotifier:
     async def test_notifier_failure_does_not_break_pipeline(self):
         class BrokenNotifier:
             async def send_event(self, event, **kwargs):
-                raise RuntimeError("telegram down")
+                raise RuntimeError("notifier down")
 
         orch, sim = build_orchestrator()
         orch.notifier = BrokenNotifier()

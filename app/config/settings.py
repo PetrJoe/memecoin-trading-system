@@ -45,10 +45,6 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://memetrader:password@localhost:5432/meme_trader"
 
-    # Telegram
-    TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
-    TELEGRAM_CHAT_ID: str = ""
-
     # Web UI (authenticated AJAX dashboard)
     WEB_UI_ENABLED: bool = True
     WEB_UI_USERNAME: str = "admin"

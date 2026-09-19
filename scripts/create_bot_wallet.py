@@ -39,7 +39,7 @@ def main() -> None:
     print()
     print("  ⚠️  NEVER share this secret key with anyone")
     print("  ⚠️  NEVER commit it to version control")
-    print("  ⚠️  NEVER send it through Telegram or email")
+    print("  ⚠️  NEVER send it through email or chat")
     print()
     print("=" * 60)
 

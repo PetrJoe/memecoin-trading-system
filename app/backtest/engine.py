@@ -88,7 +88,9 @@ class BacktestEngine:
         cfg = self.config
         sim = PaperFillSimulator(starting_cash_usd=cfg.starting_balance_usd)
         position_manager = PositionManager()
-        closed_at_start = 0
+        from app.portfolio.pnl import PnLCalculator
+
+        pnl_calc = PnLCalculator()
 
         tokens_seen: set[str] = set()
         timestamps = 0
@@ -105,6 +107,7 @@ class BacktestEngine:
                 sim.update_market(snap.token_address, price=snap.price, liquidity_usd=snap.liquidity or 0.0)
 
             # 1. Exits on open positions
+            exited_this_bar: set[str] = set()
             for addr in list(position_manager.positions.keys()):
                 price = sim.get_price(addr)
                 if price is None:
@@ -114,14 +117,20 @@ class BacktestEngine:
                     result = sim.sell(addr)
                     if result.success:
                         position_manager.close_position(addr)
+                        exited_this_bar.add(addr)
+                        pnl_calc.record_trade(_fill_to_trade(
+                            position_manager, addr, result, decision.reason
+                        ))
 
-            # 2. Entries (cap per bar)
+            # 2. Entries (cap per bar; no same-bar re-entry after an exit)
             buys = 0
             ranked = self._rank_bar(bar)
             for snap, score in ranked:
                 if buys >= cfg.max_candidates_per_timestamp:
                     break
                 if position_manager.has_position(snap.token_address):
+                    continue
+                if snap.token_address in exited_this_bar:
                     continue
                 if sim.get_price(snap.token_address) is None:
                     continue
@@ -190,14 +199,17 @@ class BacktestEngine:
                 result = sim.sell(addr)
                 if result.success:
                     position_manager.close_position(addr)
+                    pnl_calc.record_trade(_fill_to_trade(
+                        position_manager, addr, result, "END_OF_DATA"
+                    ))
 
-        summary = self._build_summary(sim)
+        summary = self._build_summary(sim, pnl_calc)
         report = BacktestReport(
             config=cfg,
             summary=summary,
             starting_balance=cfg.starting_balance_usd,
             ending_equity=sim.portfolio_value(),
-            max_drawdown_pct=self._max_drawdown(sim, cfg.starting_balance_usd),
+            max_drawdown_pct=self._max_drawdown(pnl_calc, cfg.starting_balance_usd),
             bars_processed=bars,
             timestamps=timestamps,
             tokens_seen=len(tokens_seen),
@@ -238,21 +250,29 @@ class BacktestEngine:
         ref = bar[0].timestamp if bar else snap.timestamp
         return max(0.0, (ref - snap.pair_created_at).total_seconds() / 3600.0)
 
-    def _build_summary(self, sim: PaperFillSimulator):
-        from app.portfolio.pnl import ClosedTrade, PnLCalculator
-
-        calc = PnLCalculator()
-        # Reconstruct closed trades from simulator ledger via fills is complex;
-        # PnL is embedded in realized_pnl. Use summary directly.
-        summary = PnLSummary()
-        summary.total_trades = sim.trade_count
-        summary.net_pnl = sim.realized_pnl_usd
-        summary.total_fees = sim.total_fees_usd
+    def _build_summary(self, sim: PaperFillSimulator, pnl_calc) -> PnLSummary:
+        """
+        Aggregate real per-trade stats from the PnLCalculator ledger.
+        One round-trip = one closed trade; the simulator's trade_count also
+        counts buy fills, so closed-trade counts come from the ledger.
+        """
+        summary = pnl_calc.summary()
+        summary.total_fees = sim.total_fees_usd  # include entry fees from both fills
         return summary
 
-    def _max_drawdown(self, sim: PaperFillSimulator, starting: float) -> float:
-        # Realized equity path approximation from cash movements
-        return 0.0
+    def _max_drawdown(self, pnl_calc, starting: float) -> float:
+        """Peak-to-trough drawdown over the realized equity curve."""
+        if starting <= 0:
+            return 0.0
+        equity = starting
+        peak = starting
+        max_dd = 0.0
+        for trade in pnl_calc.closed_trades:
+            equity += trade.pnl_usd
+            peak = max(peak, equity)
+            if peak > 0:
+                max_dd = max(max_dd, (peak - equity) / peak * 100.0)
+        return max_dd
 
     def _caveats(self, report: BacktestReport) -> list[str]:
         caveats = [
@@ -265,6 +285,32 @@ class BacktestEngine:
                 f"Only {report.summary.total_trades} trades — sample too small to draw conclusions."
             )
         return caveats
+
+
+def _fill_to_trade(position_manager, addr: str, result, reason: str):
+    """Convert a simulator sell fill into a ClosedTrade record."""
+    from app.portfolio.pnl import ClosedTrade
+
+    pos = position_manager.get(addr)
+    symbol = pos.symbol if pos else addr[:8]
+    entry_price = pos.entry_price if pos else 0.0
+    opened_at = pos.opened_at if pos else 0.0
+    fill = result.fill
+    return ClosedTrade(
+        side="SELL",
+        token_address=addr,
+        symbol=symbol,
+        entry_price=entry_price,
+        exit_price=fill.fill_price,
+        quantity=fill.input_amount,
+        capital_usd=pos.capital_usd if pos else 0.0,
+        proceeds_usd=fill.output_amount,
+        fees_usd=fill.fee_usd,
+        pnl_usd=result.realized_pnl,
+        pnl_pct=result.realized_pnl_pct,
+        exit_reason=reason,
+        entry_time=opened_at,
+    )
 
 
 def _run_sync(strategy, context) -> StrategySignal:

@@ -22,8 +22,6 @@ def env_defaults():
         "SOLANA_WS_URL": "wss://api.mainnet-beta.solana.com",
         "JUPITER_API_URL": "https://quote-api.jup.ag/v6",
         "DATABASE_URL": "postgresql+asyncpg://memetrader:password@localhost:5432/meme_trader",
-        "TELEGRAM_BOT_TOKEN": "",
-        "TELEGRAM_CHAT_ID": "",
         "BOT_PRIVATE_KEY": "",
     }
 

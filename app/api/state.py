@@ -10,7 +10,7 @@ from app.scanner.models import MarketSnapshot
 
 @dataclass
 class WebEvent:
-    """Alert record displayed in the web UI (replaces Telegram push alerts)."""
+    """Alert record displayed in the web dashboard event feed."""
     event_type: str
     level: str = "info"  # info | warning | error
     message: str = ""
@@ -26,10 +26,8 @@ class EventLog:
 
     def __init__(self, max_events: int = 500) -> None:
         self._events: deque[WebEvent] = deque(maxlen=max_events)
-        self._seq = 0
 
     def emit(self, event_type: str, level: str = "info", message: str = "", **data) -> WebEvent:
-        self._seq += 1
         event = WebEvent(
             event_type=event_type,
             level=level,
@@ -40,12 +38,9 @@ class EventLog:
         self._events.append(event)
         return event
 
-    def since(self, last_seq: int = 0) -> tuple[list[WebEvent], int]:
-        """Return events newer than last_seq plus the current sequence number."""
-        events = [e for e in self._events if e.timestamp > 0]
-        # seq is monotonic via list position; use index-based filtering
-        start = max(0, len(self._events) - _count_newer(self._events, last_seq))
-        return list(self._events)[start:], self._seq
+    def since(self, since_ts: float = 0.0) -> list[WebEvent]:
+        """Return events newer than the given timestamp."""
+        return [e for e in self._events if e.timestamp > since_ts]
 
     def recent(self, limit: int = 100) -> list[WebEvent]:
         events = list(self._events)
@@ -54,10 +49,6 @@ class EventLog:
 
     def clear(self) -> None:
         self._events.clear()
-
-
-def _count_newer(events: deque[WebEvent], since_ts: float) -> int:
-    return sum(1 for e in events if e.timestamp > since_ts)
 
 
 class AppState:

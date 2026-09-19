@@ -25,7 +25,7 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
   - [X] Solana RPC/WS URLs
   - [X] Jupiter API URL
   - [X] Database URL
-  - [X] Telegram bot token + chat ID
+  - [X] Web UI credentials (username/password) + session secret
   - [X] Bot private key (SecretStr)
   - [X] Risk limits: `MAX_POSITION_USD`, `MAX_OPEN_POSITIONS`, `MAX_DAILY_LOSS_USD`, `MAX_TOTAL_EXPOSURE_USD`, `MAX_SLIPPAGE_BPS`, `MAX_PRICE_IMPACT_BPS`, `MAX_CONSECUTIVE_LOSSES`, `MAX_POSITION_DURATION`
   - [X] Strategy params: `STOP_LOSS_PERCENT`, `TAKE_PROFIT_PERCENT`, `TRAILING_STOP_PERCENT`
@@ -114,7 +114,7 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
   - [X] States: `NORMAL → WARNING → PAUSED → EMERGENCY`
   - [X] Auto-pause on: daily loss exceeded, too many consecutive losses, too many execution failures, too many RPC failures, Jupiter unavailable, database unavailable, abnormal slippage, wallet balance too low, unexpected transaction state
   - [X] When paused: no new positions, continue monitoring existing, continue alerts, allow emergency exits
-  - [X] Telegram notification on activation with reason
+  - [X] Dashboard event emitted on activation with reason
 - [X] Write unit tests for risk scoring, position sizing, circuit breaker states
 - [X] Write integration tests for risk engine pipeline
 
@@ -231,7 +231,7 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 - [X] Add `PAPER_STARTING_BALANCE_USD` and `PAPER_FEE_PERCENT` to settings
 - [ ] Price feed adapter: pipe live DexScreener snapshots into the simulator (`update_market`)
 - [ ] Simulated latency/failure injection for testing recovery paths
-- [ ] Display `⚠️ PAPER TRADING — NO REAL TRANSACTIONS` on startup and in every Telegram report
+- [ ] Display `⚠️ PAPER TRADING — NO REAL TRANSACTIONS` on startup and in every dashboard report
 - [X] Write tests verifying paper trades traverse the same state machine as live (`tests/unit/test_paper.py`, 23 tests)
 - [ ] Write end-to-end test: paper buy → TP/SL trigger → paper sell → P&L assertion
 
@@ -253,7 +253,7 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
   - [X] `update_price()` returns a typed `ExitDecision` on every tick (never `None` for an open position)
   - [X] Aggregations: `total_exposure(prices)`, `total_unrealized_pnl(prizes)`
 - [ ] Persist position snapshots to PostgreSQL on open/close (bridge `PositionManager` ↔ `PositionRepository`)
-- [ ] Add `EMERGENCY`/`MANUAL`/`RISK_EVENT` close paths wired to Telegram commands and circuit breaker
+- [ ] Add `EMERGENCY`/`MANUAL`/`RISK_EVENT` close paths wired to web UI commands and circuit breaker
 
 ### 8.2 Portfolio Manager
 
@@ -285,7 +285,7 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
   - [X] Position sizing uses risk score + strategy confidence; zero size aborts before execution
   - [X] Each step returns a structured result (`executed|rejected|skipped|failed`) — no exceptions escape
   - [X] On execution failure: record with circuit breaker, log, leave state consistent
-- [ ] Wire Telegram notification into every pipeline outcome (currently success paths only)
+- [ ] Wire notification events into every pipeline outcome (currently success paths only)
 - [ ] Persist `Order`/`Trade` rows on pipeline completion (currently in-memory)
 - [ ] Slippage/price-impact validation gate before live broadcast (live mode; quote-level `MAX_SLIPPAGE_BPS`/`MAX_PRICE_IMPACT_BPS` check)
 
@@ -316,70 +316,69 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 
 ## Phase 10: Control Interface
 
-> **Decision:** Telegram is deferred. The authenticated AJAX web dashboard (Phase 12) is the primary control interface. Telegram can be added later as a secondary notifier reusing the same seam (`TradeOrchestrator.notifier` and the `EventLog` event types).
+> **Decision:** The authenticated AJAX web dashboard is the only control interface. A future channel (if ever needed) would reuse the same notifier seam (`TradeOrchestrator.notifier` + `EventLog` event types).
 
 ### 10.1 Web Dashboard (primary — implemented)
 
 - [X] Login overlay + session cookie auth (see Phase 12 for security details)
 - [X] Live status: mode, uptime, circuit breaker state, balance, open positions with unrealized P&L, win rate
-- [X] Events feed (replaces Telegram push alerts) with incremental polling (`?since=` timestamp)
+- [X] Events feed (primary alert source) with incremental polling (`?since=` timestamp)
 - [X] Controls: pause, resume, close position (click-to-confirm), emergency close-all (click-to-confirm)
 - [X] All rendered values HTML-escaped (textContent, no innerHTML) — no XSS from event/position data
 - [ ] P&L equity chart (sparkline from `DailyStats` history)
 - [ ] Daily report card generated at UTC rollover from `PnLCalculator.daily_summary()`
 - [ ] Sound/desktop notification on error-level events (optional)
 
-### 10.2 Telegram (deferred — implement when needed)
+### 10.2 Alternative Channels (not planned)
 
-- [ ] Create `app/monitoring/telegram.py` — `TelegramBot` implementing the same `send_event(event, **kwargs)` seam as the web `EventLog`
-  - [ ] Startup notification (status, mode, wallet, balance, service health)
-  - [ ] Opportunity / buy executed / position closed alerts (reuse `EventLog` event types)
-  - [ ] Circuit breaker + error/warning alerts
-  - [ ] Queue alerts if Telegram is offline, retry later (mirror `EventLog` ring buffer)
-- [ ] Implement `app/monitoring/alerts.py` — shared alert formatting (single source for both UIs)
-- [ ] Authenticated commands: `/status`, `/balance`, `/positions`, `/pnl`, `/today`, `/stats`, `/pause`, `/resume`, `/close <token>`, `/emergency`
-- [ ] Only configured Telegram chat/user ID can issue admin commands
-- [ ] Dangerous operations require confirmation; log all commands
-- [ ] NEVER expose: private key, seed phrase, API secrets, database credentials
-- [ ] Tests for command parsing and authentication
+- [ ] Nothing scheduled. The notifier seam (`TradeOrchestrator.notifier`) accepts any object with `send_event(event, **kwargs)`, so a new channel can be added without touching the trading pipeline.
 
 ---
 
 ## Phase 11: Worker Architecture
 
-### 11.1 Async Workers
+### 11.1 Trading Loop (`app/workers/trading_loop.py`) — implemented
 
-- [ ] Create `app/workers/__init__.py`
-- [ ] Implement `app/workers/scanner_worker.py`
-  - [ ] Runs every `SCANNER_INTERVAL_SECONDS`
-  - [ ] Discovers tokens, fetches market data, stores snapshots
-  - [ ] Does not block event loop
-- [ ] Implement `app/workers/strategy_worker.py`
-  - [ ] Reads candidates from DB
-  - [ ] Calculates signals using strategy engine
-  - [ ] Stores signals
-- [ ] Implement `app/workers/position_worker.py`
-  - [ ] Runs every `POSITION_CHECK_INTERVAL_SECONDS`
-  - [ ] Updates prices for open positions
-  - [ ] Calculates unrealized P&L
-  - [ ] Evaluates exit conditions (TP/SL/trailing stop)
-- [ ] Implement `app/workers/reconciliation_worker.py`
-  - [ ] Runs periodically
-  - [ ] Verifies wallet balance
-  - [ ] Verifies positions against blockchain
-  - [ ] Verifies pending transactions
-- [ ] Implement `app/workers/health_worker.py`
-  - [ ] Checks all dependencies (DB, RPC, Jupiter, Telegram)
-  - [ ] Checks resource state (CPU, RAM, disk)
-  - [ ] Sends alerts on degradation
-- [ ] All workers use timeouts for external calls
-- [ ] All workers handle exceptions without crashing
+> Design note: scanner/strategy/position workers are consolidated into one
+> `TradingLoop` task in paper mode — they share the in-memory price feed and
+> the pipeline is single-threaded per token (locks live in the orchestrator).
+> Splitting into separate tasks is only worthwhile for DB-backed live mode.
+
+- [X] Scanner cycle every `SCANNER_INTERVAL_SECONDS` (throttled, own cadence inside the loop)
+- [X] Position cycle every `POSITION_CHECK_INTERVAL_SECONDS` (price feed → exit evaluation)
+- [X] Discovery: filter-passing snapshots join the watchlist; rejects recorded with reasons
+- [X] Strategy analysis per watched token per cycle (`MAX_CANDIDATES_PER_SCAN` cap for buys)
+- [X] Orchestrator buys on BUY signals; rejected candidates leave the watchlist
+- [X] Paper simulator market data refreshed from every snapshot (fills use current price/liquidity)
+- [X] Balance tracker mark-to-market sync after every position cycle
+- [X] All state mirrored to `AppState` (prices, watchlist, signals, scan counters) for the dashboard
+- [X] Event emission with per-(type, token) cooldown (60s) — no feed spam
+- [X] Scanner outage survivable: emits `scanner_unavailable`, keeps managing positions
+- [X] Phase errors isolated: scan/position/strategy failures logged, loop continues
+- [ ] DB-backed snapshot persistence in live mode (scanner_worker split-out)
+- [X] Tests: scripted-scanner pipeline, exits, outage, cooldowns, breaker gating (`tests/unit/test_trading_loop.py` — 14 tests)
+
+### 11.2 Reconciliation Worker (`app/workers/reconciliation_worker.py`) — implemented
+
+- [X] Periodic consistency verification (paper): PositionManager ↔ simulator ↔ BalanceTracker
+- [X] Detects: missing positions, quantity mismatches, cash mismatches
+- [X] Emits `reconciliation_failed` error events with issue list
+- [X] Live mode: plug-in point for `app/blockchain/reconciliation.py` (wallet vs DB vs chain)
+- [X] Tests: consistent state, each mismatch type, event emission (`tests/unit/test_monitoring.py`)
+
+### 11.3 Health Worker (`app/workers/health_worker.py`) — implemented
+
+- [X] Periodic dependency checks (DB, RPC, DexScreener, Jupiter) with latency
+- [X] Resource thresholds (disk > 80%, memory > 85% → `resource_warning` events)
+- [X] Degraded/error dependencies emitted to the dashboard feed
+- [X] Workers use timeouts for external calls (10s connect 5s in HealthChecker)
+- [X] All worker exceptions caught and logged — never crash the loop
 
 ---
 
 ## Phase 12: FastAPI Health API & Authenticated Web Dashboard
 
-> Primary control interface (Telegram deferred — see Phase 10).
+> Primary and only control interface (see Phase 10).
 
 ### 12.1 Security Layer (`app/api/security.py`) — implemented
 
@@ -401,7 +400,7 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 - [X] `POST /api/logout` — CSRF-protected session destruction
 - [X] `GET /health` — unauthenticated liveness probe (no sensitive data)
 - [X] `GET /api/status` — mode, uptime, circuit breaker + recent events, balance, open positions with unrealized P&L, P&L summary (win rate, profit factor, drawdown), risk-limit usage
-- [X] `GET /api/events?since=&limit=` — incremental event feed (alert source, replaces Telegram push)
+- [X] `GET /api/events?since=&limit=` — incremental event feed (primary alert source)
 - [X] `POST /api/actions/pause` — manual circuit-breaker pause (CSRF)
 - [X] `POST /api/actions/resume` — resume trading (CSRF)
 - [X] `POST /api/actions/positions/{token}/close` — manual position close via orchestrator (CSRF)
@@ -409,10 +408,10 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 - [X] `app/api/state.py` — `AppState` registry + `EventLog` ring buffer wired to orchestrator notifier
 - [X] Typed response schemas (`app/api/schemas.py`); endpoints never construct services, only read `AppState`
 - [X] No secrets in any response (asserted in tests)
-- [ ] `GET /api/metrics` — operational metrics (CPU/RAM/disk, dependency availability)
+- [X] `GET /api/metrics` — operational metrics (CPU/RAM/disk, dependency availability, trading-loop health)
 - [ ] DB-backed event persistence so events survive restarts
 - [ ] Read-only vs admin roles (single admin user for now)
-- [X] Tests: auth flows, CSRF enforcement, rate limiting, endpoint payloads, action wiring (`tests/unit/test_security.py`, `tests/integration/test_api.py` — 39 tests)
+- [X] Tests: auth flows, CSRF enforcement, rate limiting, endpoint payloads, action wiring, metrics (`tests/unit/test_security.py`, `tests/integration/test_api.py`)
 
 ### 12.3 Dashboard UI (`app/api/static/`) — implemented
 
@@ -430,24 +429,21 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 
 ## Phase 13: Application Entry Point & Orchestration
 
-### 13.1 Main Application
+### 13.1 Main Application (`app/main.py`) — implemented
 
-- [ ] Implement `app/main.py`
-  - [ ] Load configuration
-  - [ ] Initialize database connection
-  - [ ] Run Alembic migrations
-  - [ ] Initialize all services (DEX Screener, Solana, Jupiter, Risk, Strategy, Portfolio, Telegram)
-  - [ ] Start all workers
-  - [ ] Start FastAPI server
-  - [ ] Handle graceful shutdown on SIGTERM/SIGINT:
-    1. Stop accepting new trades
-    2. Finish safe in-flight operations
-    3. Persist state
-    4. Close database connections
-    5. Stop workers
-    6. Exit cleanly
-  - [ ] On startup: reconcile on-chain positions before resuming
-  - [ ] Display mode clearly (PAPER vs LIVE)
+- [X] Startup banner: mode (⚠️ PAPER / live-safe / 🔴 LIVE), trading flag, paper balance, dashboard URL, warning when `WEB_UI_PASSWORD` unset
+- [X] Pre-flight dependency checks (paper mode tolerates degraded deps; non-paper aborts on critical failure)
+- [X] `AppRuntime` wires: TradingLoop → HealthWorker → ReconciliationWorker → uvicorn API server
+- [X] Graceful shutdown on SIGINT/SIGTERM:
+  1. `state.trading_enabled = False` (stop accepting new trades)
+  2. Stop trading loop (cancels at await points; in-flight operations complete via orchestrator locks)
+  3. Stop workers
+  4. Await uvicorn task with bounded timeout (clean lifespan teardown)
+  5. Close scanner HTTP client
+- [X] `--port` CLI argument for the dashboard
+- [ ] On startup in live mode: reconcile on-chain positions before resuming (wire `app/blockchain/reconciliation.py`)
+- [ ] Run Alembic migrations automatically on DB-backed deployments
+- [X] Smoke-verified end-to-end: scripted market → discovery → buy → price run-up → TAKE_PROFIT exit → equity update → clean exit
 
 ---
 
@@ -455,33 +451,41 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 
 ### 14.1 Structured Logging
 
-- [ ] Structured JSON logs with fields: level, event_type, token, tx_signature, score, reasons, etc.
-- [ ] Separate log files/categories: application, trades, errors, security
-- [ ] Never log secrets (sanitize any accidental secret in logs)
-- [ ] Log rotation (via logrotate on VPS)
+- [X] Structured logging via structlog with fields: level, event_type, token, score, reasons, slippage, pnl, etc. (`app/config/logging.py`)
+- [X] Log categories: application, trades, security (per-module `get_logger(category=...)`)
+- [X] JSON renderer in non-TTY environments; console renderer in dev
+- [X] No secrets logged (private keys are `SecretStr`, never str()'d; asserted in API tests)
+- [X] Log rotation via logrotate on VPS (`deploy/logrotate.conf`) or journald
+- [ ] Dedicated errors/security file sinks (currently categories are fields, not files)
 
-### 14.2 Monitoring
+### 14.2 Monitoring — implemented
 
-- [ ] Implement `app/monitoring/health.py` — health check logic
-- [ ] Implement `app/monitoring/metrics.py` — operational metrics
-- [ ] Track: CPU, RAM, disk, network, bot uptime, DB availability, RPC availability, Jupiter availability, scanner activity, trade execution failures
-- [ ] Send Telegram warning on: disk > 80%, memory > 85%, worker stopped, DB unavailable, RPC unavailable, too many failed trades, circuit breaker activated
+- [X] `app/monitoring/health.py` — `HealthChecker`: DB / Solana RPC / DexScreener / Jupiter probes with latency; aggregate ok/degraded/error
+- [X] `app/monitoring/metrics.py` — `MetricsCollector`: CPU, RSS memory, threads, open files, disk usage, uptime (psutil optional, graceful degradation)
+- [X] Scanner activity + trade failures tracked in `AppState` (surfaces via `/api/metrics`)
+- [X] Warnings on: disk > 80%, memory > 85% (`DISK_USAGE_WARN_PCT`, `MEM_USAGE_WARN_PCT`) → dashboard events
+- [X] Dependency degradation → `dependency_degraded` events in the dashboard feed
+- [X] `GET /api/metrics` endpoint exposes everything (auth-required, no secrets)
+- [ ] Persistence of metrics history for graphing
 
 ---
 
-## Phase 15: Backtesting
+## Phase 15: Backtesting — implemented (`app/backtest/engine.py`)
 
-### 15.1 Backtest Framework
-
-- [ ] Create interface for replaying historical market snapshots through strategy
-- [ ] Output metrics: total trades, winning/losing trades, win rate, gross profit, gross loss, net profit, maximum drawdown, profit factor, average win, average loss, average holding time
-- [ ] Do not claim profitability from small samples
+- [X] `BacktestEngine.run(history)`: replay chronological bars (lists of `MarketSnapshot`) through the SAME strategy → risk → sizing → paper-fill pipeline as live
+- [X] Same-bar exit-then-re-entry prevention; per-bar candidate cap; force-liquidation at end of data (`END_OF_DATA` exit reason)
+- [X] `BacktestReport`: total/winning/losing trades, win rate, gross profit/loss, net P&L, max drawdown (realized equity curve), profit factor, average win/loss, fees, ending equity, tokens seen
+- [X] Honesty caveats always attached: simplified slippage, snapshot-only prices (no MEV/rug dynamics), small-sample warning (< 30 trades), past-performance disclaimer
+- [X] Refuses to run inside a running event loop (clear error)
+- [X] Tests: profit/loss/drawdown scenarios, liquidation, caveats, dict export (`tests/unit/test_backtest.py` — 8 tests)
+- [ ] Load history from the `market_snapshots` table (needs DB session plumbing)
+- [ ] Equity curve export for charting
 
 ---
 
 ## Phase 16: Testing
 
-> Current suite: **256 tests passing** (`venv/bin/python -m pytest tests/ -q`).
+> Current suite: **326 tests passing** (`venv/bin/python -m pytest tests/ -q`).
 
 ### 16.1 Unit Tests (`tests/unit/`)
 
@@ -501,6 +505,9 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 - [X] Paper trading engine tests (`test_paper.py` — slippage model, fills, portfolio math)
 - [X] Position manager tests (`test_positions.py` — exit priority, high-water mark, time limit)
 - [X] Orchestrator pipeline tests (`test_orchestrator.py` — buy/sell flows, duplicate protection, breaker integration)
+- [X] Trading loop tests (`test_trading_loop.py` — scripted scanner pipeline, exits, outage resilience, event cooldown, breaker gating)
+- [X] Backtest engine tests (`test_backtest.py` — profit/loss/drawdown, liquidation, caveats)
+- [X] Metrics collector + reconciliation worker tests (`test_monitoring.py`)
 - [ ] Momentum strategy edge cases: stale snapshots, zero-liquidity, missing volume fields
 - [ ] Property-based tests for P&L math (hypothesis): round-trip conservation, no negative cash
 
@@ -509,114 +516,108 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 - [ ] PostgreSQL repository tests (with test DB)
 - [X] DEX Screener client tests (mocked API)
 - [ ] Jupiter client tests (mocked API)
-- [X] Jupiter client tests (mocked API)
-- [ ] Solana client tests (mocked RPC)
 - [X] Solana client tests (mocked RPC)
-- [ ] Telegram bot tests (mocked API)
-- [ ] End-to-end buy flow test (paper mode)
-- [ ] End-to-end sell flow test (paper mode)
-- [ ] Full pipeline test (discover → analyze → signal → execute → monitor → exit)
+- [X] Web API tests (`test_api.py` — auth, CSRF, rate limiting, status/events/metrics payloads, action endpoints with wired orchestrator)
+- [X] End-to-end buy flow (paper) — covered in loop + API tests
+- [X] End-to-end sell flow (paper) — TP/SL exit through orchestrator
+- [X] Full pipeline test (discover → analyze → signal → execute → monitor → exit) — `test_trading_loop.py`
+- [ ] Main-entry smoke test as automated pytest (currently verified via manual scripted-market run)
 
 ### 16.3 Failure/Recovery Tests
 
 - [ ] RPC outage recovery
 - [ ] Jupiter outage recovery
-- [ ] DEX Screener outage recovery
+- [X] DEX Screener outage recovery (`test_trading_loop.py::test_scanner_outage_is_survivable`)
 - [ ] Database outage recovery (fail closed for new trades)
-- [ ] Telegram outage recovery (trading continues, alerts queued)
 - [ ] Transaction timeout handling
-- [ ] Duplicate signal prevention
-- [ ] Duplicate transaction prevention
+- [X] Duplicate signal prevention (orchestrator duplicate window + position-already-open guard)
+- [X] Duplicate transaction prevention (per-token locks + in-flight set, `test_orchestrator.py`)
 - [ ] VPS restart recovery simulation
+- [ ] Circuit-breaker auto-resume cooldown
 
 ---
 
-## Phase 17: VPS Deployment
+## Phase 17: VPS Deployment — implemented (`deploy/`)
 
 ### 17.1 VPS Setup
 
-- [ ] Create deployment script for Ubuntu 24.04+
-- [ ] Install: Python 3.12+, PostgreSQL, Git, UFW, systemd
-- [ ] Create dedicated Linux user: `memetrader`
-- [ ] Deploy to `/opt/meme-trader`
-- [ ] Set permissions (prevent other users from reading secrets)
-- [ ] Configure UFW firewall
-- [ ] SSH key authentication (disable password login where practical)
-- [ ] PostgreSQL not publicly exposed
-- [ ] FastAPI not publicly exposed unless required
+- [X] `deploy/setup_vps.sh` for Ubuntu 24.04+ (idempotent, run as root)
+- [X] Installs: Python 3.12, PostgreSQL, Git, UFW, nginx, logrotate
+- [X] Dedicated system user `memetrader`; app at `/opt/meme-trader`
+- [X] `.env` chmod 600, owned by service user; rsync excludes `.env`/`.git`/`venv`/`backups`
+- [X] UFW: deny incoming, allow OpenSSH (+Nginx Full when proxying)
+- [ ] SSH key hardening (documented; left to operator's existing sshd config)
+- [X] PostgreSQL localhost-only (default Ubuntu config), dedicated role + db
+- [X] FastAPI stays bound to 127.0.0.1 (public access only via nginx TLS)
 
-### 17.2 systemd Serviceq1
+### 17.2 systemd Service
 
-- [ ] Create `deploy/meme-trader.service`
-  - [ ] `User=memetrader`
-  - [ ] `WorkingDirectory=/opt/meme-trader`
-  - [ ] `Restart=always`
-  - [ ] `RestartSec=5`
-  - [ ] Start on boot
-  - [ ] Restart after failure
-  - [ ] Graceful stop
-  - [ ] Load env vars securely (via `EnvironmentFile`)
-  - [ ] Logs to journald
+- [X] `deploy/meme-trader.service`
+  - [X] `User=memetrader`, `WorkingDirectory=/opt/meme-trader`
+  - [X] `Restart=always`, `RestartSec=5`, start on boot
+  - [X] Graceful stop (`KillSignal=SIGINT`, `KillMode=mixed`, 30s stop timeout)
+  - [X] Secrets via `EnvironmentFile=/opt/meme-trader/.env` (600 perms)
+  - [X] Logs to journald (`SyslogIdentifier=meme-trader`)
+  - [X] Hardening: `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `LimitCORE=0`
 
-### 17.3 Nginx (if needed)
+### 17.3 Nginx
 
-- [ ] Create `deploy/nginx.conf` — reverse proxy for FastAPI if public HTTPS access needed
+- [X] `deploy/nginx.conf` — HTTP→HTTPS redirect, TLS 1.2/1.3, HSTS + security headers, API rate-limit zone, proxy to 127.0.0.1:8080
 
 ### 17.4 Log Rotation
 
-- [ ] Create `deploy/logrotate.conf`
+- [X] `deploy/logrotate.conf` — daily, 14 rotations, compress, service user ownership
 
 ### 17.5 Database Backup
 
-- [ ] Create `scripts/backup_database.sh`
-  - [ ] Daily PostgreSQL backups via cron
-  - [ ] Retention: 7 daily, 4 weekly
-  - [ ] Never include private keys in backups
+- [X] `deploy/backup_database.sh`
+  - [X] Daily pg_dump | gzip via cron (`/etc/cron.d/meme-trader-backup`, 04:00)
+  - [X] Retention: 7 daily + weekly anchors (28 days)
+  - [X] Dump integrity verified (gzip -t, non-empty); only DATABASE_URL read from env
+  - [X] Never includes private keys (dumps DB only)
 
 ---
 
-## Phase 18: Scripts & Utilities
+## Phase 18: Scripts & Utilities — implemented
 
-- [ ] `scripts/migrate.py` — run Alembic migrations programmatically
-- [ ] `scripts/healthcheck.py` — standalone health check script
-- [ ] `scripts/create_bot_wallet.py` — generate new wallet (see Phase 5)
-- [ ] `scripts/backup_database.sh` — see Phase 17.5
+- [X] `scripts/migrate.py` — Alembic runner (upgrade/downgrade/current/history/stamp)
+- [X] `scripts/healthcheck.py` — standalone check; exit 0/1/2 (ok/degraded/error), `--quick` skips network; cron/LB friendly
+- [X] `scripts/create_bot_wallet.py` — generate new wallet (see Phase 5)
+- [X] `deploy/backup_database.sh` — see Phase 17.5
 
 ---
 
-## Phase 19: Documentation
+## Phase 19: Documentation — implemented (`README.md`)
 
 ### 19.1 README
 
-- [ ] Project overview
-- [ ] Architecture diagram
-- [ ] Prerequisites
-- [ ] Installation guide (local development)
-- [ ] Configuration guide (`.env` variables)
-- [ ] Running the bot (paper mode first)
-- [ ] Running the bot (live-safe mode)
-- [ ] Telegram commands reference
-- [ ] API endpoints reference
-- [ ] VPS deployment guide
-- [ ] Troubleshooting section
+- [X] Project overview + honest risk disclaimer
+- [X] Architecture diagram + module map table
+- [X] Prerequisites & install (local development)
+- [X] Quick start: paper mode with dashboard
+- [X] Trading modes table + live-mode checklist
+- [X] Configuration guide (risk limits, strategy, scanner, web UI)
+- [X] Web dashboard guide + security model
+- [X] API endpoints reference
+- [X] VPS deployment guide
+- [X] Troubleshooting table
 
 ### 19.2 Security Documentation
 
-- [ ] Security-first defaults documented
-- [ ] Private key handling rules
-- [ ] Wallet architecture explained
-- [ ] What is NEVER exposed (keys, secrets, credentials)
-- [ ] Network security (UFW, SSH, PostgreSQL access)
-- [ ] Telegram authentication
+- [X] Security-first defaults documented (paper default, TRADING_ENABLED=false, login disabled without password)
+- [X] Private key handling rules (dedicated wallet, env-only, never committed/logged)
+- [X] What is NEVER exposed (keys, secrets, credentials — asserted in tests)
+- [X] Network security (UFW, localhost-only services, TLS via nginx)
+- [X] Session/CSRF/rate-limit model documented
+- [ ] Wallet architecture deep-dive (live-mode key custody)
 
 ### 19.3 Trading Configuration Documentation
 
-- [ ] All configurable parameters explained
-- [ ] Risk limits explained with examples
-- [ ] Scoring weights explained
-- [ ] Strategy parameters explained
-- [ ] Trading modes explained (paper/live_safe/live)
-- [ ] Circuit breaker triggers explained
+- [X] Risk limits explained with defaults table
+- [X] Strategy & scanner parameters explained
+- [X] Trading modes explained (paper/live_safe/live)
+- [X] Circuit breaker triggers explained
+- [ ] Scoring weights worked examples (README points to settings.py defaults)
 
 ---
 
@@ -624,19 +625,19 @@ Comprehensive task breakdown for the Autonomous Solana Memecoin Trading Bot.
 
 ### 20.1 Acceptance Criteria
 
-- [ ] `python -m app.main` starts successfully
-- [ ] Paper mode: discover → analyze → signal → simulate buy → monitor → simulate TP/SL → simulate sell → calculate P&L → send Telegram report
-- [ ] Live-safe mode: discover → risk check → strategy → position sizing → Jupiter quote → sign → submit → confirm → record → monitor → exit
-- [ ] VPS reboot: bot auto-starts → connects DB → checks dependencies → reconciles wallet → reconciles positions → resumes
-- [ ] Failure: Jupiter offline → bot doesn't crash
-- [ ] Failure: DEX Screener offline → stops discovering, manages existing positions
-- [ ] Failure: Telegram offline → trading continues, alerts queued
-- [ ] Failure: Database offline → fails closed for new trades
-- [ ] All tests passing
-- [ ] No secrets in logs
-- [ ] No private keys in Telegram messages
-- [ ] Default mode is paper trading
-- [ ] Live trading requires explicit opt-in
+- [X] `python -m app.main` starts successfully (smoke-tested with scripted market)
+- [X] Paper mode end-to-end: discover → analyze → signal → simulate buy → monitor → simulate TP → simulate sell → calculate P&L → dashboard event feed
+- [ ] Live-safe mode end-to-end (Jupiter client exists + tested with mocked API; needs on-chain smoke test with real wallet)
+- [ ] VPS reboot: bot auto-starts → checks dependencies → reconciles → resumes (systemd unit ready; needs live validation)
+- [ ] Failure: Jupiter offline → bot doesn't crash (client retries + typed errors; orchestrator-level test pending)
+- [X] Failure: DEX Screener offline → stops discovering, manages existing positions (tested)
+- [X] Failure: event/notify failures never break the trading pipeline (tested)
+- [ ] Failure: Database offline → fails closed for new trades (DB-backed mode pending)
+- [X] All tests passing (326)
+- [X] No secrets in logs/API responses (SecretStr + test assertions)
+- [X] Default mode is paper trading
+- [X] Live trading requires explicit opt-in (TRADING_ENABLED=false default; TRADING_ENABLED incompatible with paper mode in config validation)
+- [X] No placeholder/mock implementations in runtime code (all components wired and exercised)
 
 ---
 
@@ -652,13 +653,11 @@ sqlalchemy[asyncio]
 asyncpg
 alembic
 httpx
-python-telegram-bot
 solders
 solana
 base58
 python-dotenv
 structlog
-pytest
-pytest-asyncio
-pytest-cov
+psutil (optional — full resource metrics)
+pytest / pytest-asyncio / pytest-cov (dev)
 ```

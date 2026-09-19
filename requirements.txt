@@ -6,7 +6,6 @@ sqlalchemy[asyncio]>=2.0.25
 asyncpg>=0.29.0
 alembic>=1.13.0
 httpx>=0.26.0
-python-telegram-bot>=21.0
 solders>=0.21.0
 solana>=0.34.0
 base58>=2.1.0
